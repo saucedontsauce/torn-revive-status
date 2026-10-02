@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Revive Status Display
 // @namespace    http://tampermonkey.net/
-// @version      1.0.1
+// @version      1.0.2
 // @description  Display REVIVE beside war-rank players you can revive.
 // @author       You
 // @match        https://www.torn.com/profiles.php*
