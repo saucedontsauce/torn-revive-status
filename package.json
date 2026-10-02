@@ -1,0 +1,20 @@
+{
+  "name": "torn-revive-status",
+  "version": "1.0.0",
+  "description": "",
+  "main": "build-meta.js",
+  "scripts": {
+    "build": "node build-meta.js"
+  },
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/saucedontsauce/torn-revive-status.git"
+  },
+  "keywords": [],
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/saucedontsauce/torn-revive-status/issues"
+  },
+  "homepage": "https://github.com/saucedontsauce/torn-revive-status#readme"
+}
