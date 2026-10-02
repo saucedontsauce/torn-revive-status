@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Revive Status Display
 // @namespace    http://tampermonkey.net/
-// @version      1.0.2
+// @version      1.0.3
 // @description  Display REVIVE beside war-rank players you can revive.
 // @author       You
 // @match        https://www.torn.com/profiles.php*
@@ -9,8 +9,8 @@
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=torn.com
 // @grant        none
 // @run-at       document-end
-// @downloadURL  https://update.greasyfork.org/scripts/598400/revive%20status%20display.user.js
-// @updateURL    https://update.greasyfork.org/scripts/598400/revive%20status%20display.meta.js
+// @updateURL    https://raw.githubusercontent.com/saucedontsauce/torn-revive-status/main/dist/script.meta.js
+// @downloadURL  https://raw.githubusercontent.com/saucedontsauce/torn-revive-status/main/dist/script.user.js
 // ==/UserScript==
 
 (() => {
