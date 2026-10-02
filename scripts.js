@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Revive Status Display
 // @namespace    http://tampermonkey.net/
-// @version      1.0.5
-// @description  Display REVIVE beside war-rank players you can revive.
+// @version      1.1.0
+// @description  Display REVIVE beside ranked-war players you can revive, on both sides of the war.
 // @author       You
 // @match        https://www.torn.com/profiles.php*
 // @match        https://www.torn.com/factions.php*
@@ -30,6 +30,13 @@
 
   /*
    * Current Torn ranked-war member rows.
+   *
+   * Torn uses:
+   *
+   * .your   = one side
+   * .enemy  = the other side
+   *
+   * We deliberately process BOTH.
    */
   const WAR_MEMBER_SELECTOR =
     "ul.members-list li.your, ul.members-list li.enemy";
@@ -48,6 +55,7 @@
    * user ID -> {
    *   id,
    *   factionId,
+   *   factionSide,
    *   is_revivable,
    *   ...
    * }
@@ -133,9 +141,7 @@
 
   async function fetchCurrentUser(apiKey = getApiKey()) {
     /*
-     * IMPORTANT:
-     *
-     * Use /user/profile, not /user/basic.
+     * Use /user/profile.
      *
      * Current Torn v2 profile data includes faction_id.
      */
@@ -175,12 +181,13 @@
     }
 
     /*
-     * Defensive support in case a response is returned as
-     * an object keyed by player ID.
+     * Defensive support in case Torn returns members as an
+     * object keyed by player ID.
      */
     if (data?.members && typeof data.members === "object") {
       return Object.entries(data.members).map(([id, member]) => ({
         ...member,
+
         id: member?.id ?? id,
       }));
     }
@@ -193,6 +200,10 @@
   // ============================================================
 
   async function fetchFactionWars(factionId, apiKey = getApiKey()) {
+    if (!factionId) {
+      throw new Error("No faction ID provided.");
+    }
+
     return tornFetch(
       `/faction/${encodeURIComponent(factionId)}/wars`,
       {},
@@ -217,16 +228,16 @@
 
     if (typeof ranked === "object") {
       /*
-       * Normal current response is an object containing the
+       * Normal response can be an object containing the
        * active ranked war.
-       *
-       * But supporting nested/object forms makes this resilient
-       * to Torn's API representation.
        */
       if (Array.isArray(ranked.factions)) {
         return [ranked];
       }
 
+      /*
+       * Defensive support for object-keyed responses.
+       */
       return Object.values(ranked).filter(
         (value) => value && typeof value === "object",
       );
@@ -236,31 +247,31 @@
   }
 
   /*
-   * Find the active ranked war involving our faction.
+   * Find the active ranked war involving a specific faction.
    */
-  function findActiveRankedWar(data, ownFactionId) {
+  function findActiveRankedWar(data, factionId) {
     const candidates = getRankedWarCandidates(data);
 
-    const ownId = String(ownFactionId);
+    const factionIdString = String(factionId);
 
     /*
-     * Prefer a war which is explicitly ongoing.
+     * First prefer an explicitly active war.
      */
     const active = candidates.find((war) => {
       if (!Array.isArray(war?.factions)) {
         return false;
       }
 
-      const containsOwnFaction = war.factions.some(
-        (faction) => String(faction?.id) === ownId,
+      const containsFaction = war.factions.some(
+        (faction) => String(faction?.id) === factionIdString,
       );
 
-      if (!containsOwnFaction) {
+      if (!containsFaction) {
         return false;
       }
 
       /*
-       * end == null means ongoing.
+       * end == null / 0 means ongoing.
        */
       return war.end === null || war.end === undefined || Number(war.end) === 0;
     });
@@ -270,24 +281,29 @@
     }
 
     /*
-     * Some API/UI states can omit end information.
+     * Some Torn responses may omit end information.
      *
-     * If there is only a war involving our faction,
-     * use it as the fallback.
+     * If there is only a war involving the requested faction,
+     * use the most recent one.
      */
-    const involvingUs = candidates
+    const involvingFaction = candidates
       .filter(
         (war) =>
           Array.isArray(war?.factions) &&
-          war.factions.some((faction) => String(faction?.id) === ownId),
+          war.factions.some(
+            (faction) => String(faction?.id) === factionIdString,
+          ),
       )
       .sort((a, b) => Number(b?.start || 0) - Number(a?.start || 0));
 
-    return involvingUs[0] || null;
+    return involvingFaction[0] || null;
   }
 
   /*
-   * Get the two factions participating in the war.
+   * Get the two factions participating in a war.
+   *
+   * ownFactionId is OUR faction, not necessarily the faction
+   * whose page we are currently looking at.
    */
   function getWarFactions(war, ownFactionId) {
     if (!war || !Array.isArray(war.factions)) {
@@ -315,6 +331,52 @@
 
       enemyName: enemy.name || "",
     };
+  }
+
+  // ============================================================
+  // CURRENTLY VIEWED FACTION
+  // ============================================================
+
+  /*
+   * Returns the faction ID represented by the current
+   * factions.php page.
+   *
+   * YOUR WAR:
+   *
+   * factions.php?step=your&type=1#/war/rank
+   *
+   * OTHER FACTION:
+   *
+   * factions.php?step=profile&ID=52793#/war/rank
+   *
+   * If ID exists, that faction is the faction whose war page
+   * we are viewing.
+   *
+   * Otherwise we fall back to our own faction.
+   */
+  function getViewedFactionId(ownFactionId) {
+    if (location.pathname !== "/factions.php") {
+      return String(ownFactionId);
+    }
+
+    const params = new URLSearchParams(location.search);
+
+    const viewedFactionId = params.get("ID");
+
+    if (viewedFactionId && /^\d+$/.test(viewedFactionId)) {
+      return String(viewedFactionId);
+    }
+
+    return String(ownFactionId);
+  }
+
+  /*
+   * Useful for debugging / UI logic.
+   */
+  function isViewingOtherFaction(ownFactionId) {
+    const viewedFactionId = getViewedFactionId(ownFactionId);
+
+    return String(viewedFactionId) !== String(ownFactionId);
   }
 
   // ============================================================
@@ -366,6 +428,10 @@
       return false;
     }
   }
+
+  // ============================================================
+  // STYLES
+  // ============================================================
 
   function addStyles() {
     if (document.getElementById("revive-status-styles")) {
@@ -776,11 +842,19 @@
     }
 
     /*
-     * The current ranked-war UI uses the hash router.
+     * IMPORTANT:
      *
-     * Example:
+     * Do NOT check step=your.
+     *
+     * Your own war:
      *
      * factions.php?step=your&type=1#/war/rank
+     *
+     * Another faction:
+     *
+     * factions.php?step=profile&ID=52793#/war/rank
+     *
+     * Both are ranked-war pages.
      */
     return location.hash.startsWith("#/war/rank");
   }
@@ -831,7 +905,9 @@
 
     return {
       id,
+
       row,
+
       profileLink,
     };
   }
@@ -862,20 +938,38 @@
     }
 
     /*
-     * Avoid duplicate markers.
+     * Find the same status container used by your existing
+     * Torn row structure.
      */
     const parent = profileLink.parentElement;
-    const someAncestor = parent.parentElement.parentElement.parentElement;
 
-    if (
-      someAncestor
-        ?.querySelector(".status")
-        ?.querySelector(`.${REVIVE_MARKER_CLASS}`)
-    ) {
+    const someAncestor = parent?.parentElement?.parentElement?.parentElement;
+
+    if (!someAncestor) {
       return;
     }
 
-    console.log("great-great-grandparent", someAncestor);
+    const status = someAncestor.querySelector(".status");
+
+    /*
+     * IMPORTANT:
+     *
+     * Check that .status exists BEFORE accessing .style.
+     */
+    if (!status) {
+      return;
+    }
+
+    /*
+     * Avoid duplicate markers.
+     */
+    if (status.querySelector(`.${REVIVE_MARKER_CLASS}`)) {
+      return;
+    }
+
+    status.style.display = "flex";
+
+    status.style.gap = "4px";
 
     const marker = document.createElement("div");
 
@@ -885,22 +979,22 @@
 
     marker.title = "This user has their revives enabled.";
 
-    /*
-     * Directly beside the player's status.
-     */
-    const status = someAncestor?.querySelector(".status");
-    status.style.display = "flex";
-    status.style.gap = "4px";
-
-    if (!status) {
-      return;
-    }
-
     status.appendChild(marker);
   }
 
   /*
-   * Apply the API data to both sides of the war.
+   * Apply the API data to BOTH sides of the war.
+   *
+   * This function does not care whether the current URL is:
+   *
+   * step=your
+   *
+   * or:
+   *
+   * step=profile&ID=52793
+   *
+   * It simply reads the player IDs currently rendered by Torn
+   * and looks them up in memberData.
    */
   function applyReviveMarkers() {
     if (!isRankedWarPage()) {
@@ -930,11 +1024,9 @@
       }
 
       /*
-       * THE ONLY CONDITION FOR SHOWING REVIVE STATUS.
+       * ONLY show the marker when:
        *
-       * true  -> green R
-       * false -> nothing
-       * other -> nothing
+       * is_revivable === true
        */
       if (member.is_revivable === true) {
         addReviveMarker(info.profileLink, info.id);
@@ -989,13 +1081,12 @@
     loadingWarData = true;
 
     try {
-      /*
-       * --------------------------------------------------------
-       * STEP 1
-       *
-       * Get our faction ID from /user/profile.
-       * --------------------------------------------------------
-       */
+      // --------------------------------------------------------
+      // STEP 1
+      //
+      // Identify OUR faction.
+      // --------------------------------------------------------
+
       const user = await fetchCurrentUser(apiKey);
 
       const ownFactionId = user?.profile?.faction_id;
@@ -1006,38 +1097,115 @@
         );
       }
 
-      /*
-       * --------------------------------------------------------
-       * STEP 2
-       *
-       * Get the current ranked war.
-       * --------------------------------------------------------
-       */
-      const wars = await fetchFactionWars(ownFactionId, apiKey);
+      // --------------------------------------------------------
+      // STEP 2
+      //
+      // Determine which faction's war page we're viewing.
+      //
+      // OWN WAR:
+      //   factions.php?step=your...
+      //
+      // OTHER FACTION:
+      //   factions.php?step=profile&ID=52793...
+      // --------------------------------------------------------
 
-      const war = findActiveRankedWar(wars, ownFactionId);
+      const viewedFactionId = getViewedFactionId(ownFactionId);
+
+      const viewingOther = isViewingOtherFaction(ownFactionId);
+
+      console.log("[Revive Status] War page:", {
+        ownFactionId: String(ownFactionId),
+
+        viewedFactionId: String(viewedFactionId),
+
+        viewingOtherFaction: viewingOther,
+
+        url: location.href,
+      });
+
+      // --------------------------------------------------------
+      // STEP 3
+      //
+      // Get the wars belonging to the faction whose war page
+      // we're actually looking at.
+      //
+      // This is the important fix.
+      //
+      // If viewing another faction:
+      //
+      //   /faction/52793/wars
+      //
+      // instead of always doing:
+      //
+      //   /faction/YOUR_ID/wars
+      // --------------------------------------------------------
+
+      const wars =
+        String(viewedFactionId) === String(ownFactionId)
+          ? await fetchFactionWars(ownFactionId, apiKey)
+          : await fetchFactionWars(viewedFactionId, apiKey);
+
+      const war = findActiveRankedWar(wars, viewedFactionId);
 
       if (!war) {
-        /*
-         * There is no active ranked war.
-         */
         currentWar = null;
 
         memberData.clear();
 
         removeAllReviveMarkers();
 
-        console.log("[Revive Status] No active ranked war found.");
+        console.log(
+          "[Revive Status] No active ranked war found for viewed faction.",
+        );
 
         return;
       }
 
-      const factions = getWarFactions(war, ownFactionId);
+      // --------------------------------------------------------
+      // STEP 4
+      //
+      // Identify BOTH factions from the active war.
+      //
+      // We use our own faction ID when possible so currentWar
+      // continues to distinguish our faction from the enemy.
+      // --------------------------------------------------------
 
+      let factions = getWarFactions(war, ownFactionId);
+
+      /*
+       * If we're viewing a faction and, for whatever reason,
+       * our faction isn't present in the returned war object,
+       * fall back to identifying the viewed faction and its
+       * opponent.
+       */
       if (!factions) {
-        throw new Error(
-          "Could not identify both factions in the active ranked war.",
+        const warFactions = Array.isArray(war?.factions)
+          ? war.factions.filter((faction) => faction?.id)
+          : [];
+
+        const viewed = warFactions.find(
+          (faction) => String(faction.id) === String(viewedFactionId),
         );
+
+        const opponent = warFactions.find(
+          (faction) => String(faction.id) !== String(viewedFactionId),
+        );
+
+        if (!viewed || !opponent) {
+          throw new Error(
+            "Could not identify both factions in the active ranked war.",
+          );
+        }
+
+        factions = {
+          ownId: String(viewed.id),
+
+          ownName: viewed.name || "",
+
+          enemyId: String(opponent.id),
+
+          enemyName: opponent.name || "",
+        };
       }
 
       currentWar = {
@@ -1050,37 +1218,47 @@
         enemyFactionId: factions.enemyId,
 
         enemyFactionName: factions.enemyName,
+
+        viewedFactionId: String(viewedFactionId),
+
+        viewingOtherFaction: viewingOther,
       };
 
       console.log("[Revive Status] Active ranked war:", currentWar);
 
-      /*
-       * --------------------------------------------------------
-       * STEP 3
-       *
-       * Fetch BOTH factions.
-       *
-       * This is the important change from the previous version.
-       * --------------------------------------------------------
-       */
-      const [ownMembers, enemyMembers] = await Promise.all([
-        fetchOwnFactionMembers(apiKey),
+      // --------------------------------------------------------
+      // STEP 5
+      //
+      // Fetch BOTH factions.
+      //
+      // This is now independent of which faction's page we're
+      // viewing.
+      // --------------------------------------------------------
+
+      const [factionAMembers, factionBMembers] = await Promise.all([
+        /*
+         * If this is our faction, use /faction/members.
+         *
+         * If this is the other faction, use its explicit ID.
+         */
+        String(factions.ownId) === String(ownFactionId)
+          ? fetchOwnFactionMembers(apiKey)
+          : fetchFactionMembers(factions.ownId, apiKey),
 
         fetchFactionMembers(factions.enemyId, apiKey),
       ]);
 
-      /*
-       * --------------------------------------------------------
-       * STEP 4
-       *
-       * Combine both member lists into one lookup.
-       *
-       * player ID -> member
-       * --------------------------------------------------------
-       */
+      // --------------------------------------------------------
+      // STEP 6
+      //
+      // Combine BOTH faction member lists.
+      //
+      // Player ID -> member data
+      // --------------------------------------------------------
+
       const newMemberData = new Map();
 
-      for (const member of ownMembers) {
+      for (const member of factionAMembers) {
         if (!member?.id) {
           continue;
         }
@@ -1090,11 +1268,11 @@
 
           factionId: factions.ownId,
 
-          factionSide: "own",
+          factionSide: "factionA",
         });
       }
 
-      for (const member of enemyMembers) {
+      for (const member of factionBMembers) {
         if (!member?.id) {
           continue;
         }
@@ -1104,40 +1282,56 @@
 
           factionId: factions.enemyId,
 
-          factionSide: "enemy",
+          factionSide: "factionB",
         });
       }
 
       memberData = newMemberData;
 
-      /*
-       * --------------------------------------------------------
-       * STEP 5
-       *
-       * Apply indicators to both sides.
-       * --------------------------------------------------------
-       */
+      // --------------------------------------------------------
+      // STEP 7
+      //
+      // Apply indicators to whichever rows Torn has rendered.
+      // --------------------------------------------------------
+
       applyReviveMarkers();
 
-      /*
-       * Useful debug information.
-       */
-      const revivableOwn = ownMembers.filter(
+      // --------------------------------------------------------
+      // DEBUG INFORMATION
+      // --------------------------------------------------------
+
+      const revivableA = factionAMembers.filter(
         (member) => member?.is_revivable === true,
       ).length;
 
-      const revivableEnemy = enemyMembers.filter(
+      const revivableB = factionBMembers.filter(
         (member) => member?.is_revivable === true,
       ).length;
 
       console.log("[Revive Status] Loaded war members:", {
-        own: ownMembers.length,
+        warId: currentWar.warId,
 
-        enemy: enemyMembers.length,
+        factionA: {
+          id: factions.ownId,
 
-        ownRevivable: revivableOwn,
+          name: factions.ownName,
 
-        enemyRevivable: revivableEnemy,
+          members: factionAMembers.length,
+
+          revivable: revivableA,
+        },
+
+        factionB: {
+          id: factions.enemyId,
+
+          name: factions.enemyName,
+
+          members: factionBMembers.length,
+
+          revivable: revivableB,
+        },
+
+        total: newMemberData.size,
       });
     } catch (error) {
       console.error("[Revive Status] Failed to load war revive data:", error);
@@ -1227,7 +1421,7 @@
     }, 500);
 
     /*
-     * Load both factions.
+     * Load BOTH factions.
      */
     await loadWarReviveStatus();
 
@@ -1392,6 +1586,10 @@
     loadWarReviveStatus,
 
     applyReviveMarkers,
+
+    getViewedFactionId,
+
+    isViewingOtherFaction,
 
     getCurrentWar: () => currentWar,
   };
